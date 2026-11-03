@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "atlas-mem",
+  "owner": {
+    "name": "ZoCCo"
+  },
+  "description": "Four independent dials — compression (low/high), rigour (ask), check and silent — plus five subagents that keep searches, logs, pages and big files out of your conversation. Compresses without losing a fact, and refuses to start building before the goal is clear. This variant adds review, build fixing and a memory: notes written by hand, linked to code, and flagged as suspect when that code or what it depends on changes.",
+  "plugins": [
+    {
+      "name": "atlas-mem",
+      "source": "./",
+      "version": "0.1.1",
+      "description": "Four independent dials — compression (low/high), rigour (ask), check and silent — plus five subagents that keep searches, logs, pages and big files out of your conversation. Compresses without losing a fact, and refuses to start building before the goal is clear. This variant adds review, build fixing and a memory: notes written by hand, linked to code, and flagged as suspect when that code or what it depends on changes."
+    }
+  ]
+}
