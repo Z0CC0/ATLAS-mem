@@ -8,6 +8,8 @@
 /plugin install atlas-mem@atlas
 ```
 
+It needs `node` on the PATH and Claude Code 2.1.139 or later.
+
 It ships off, and nothing changes until you type `atlas low` or `atlas high`. Install one ATLAS build: two side by side inject the rules twice. For coding and video too, install [`atlas-max`](https://github.com/Z0CC0/ATLAS-max) instead.
 
 ## See it work
