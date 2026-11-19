@@ -16,6 +16,9 @@ Deserialising input: pickle, `yaml.load`, Java `ObjectInputStream`, `BinaryForma
 names in JSON; no size or depth limit.
 HTML from input rendered raw: `innerHTML`, `dangerouslySetInnerHTML`, `v-html`, `{!! !!}`,
 `mark_safe`, `|safe`. `href`/`src` from input without a scheme check (`javascript:`, `data:`).
+A `message` listener that acts on `event.data` without comparing `event.origin` to a fixed
+origin: any page that frames or opens this one can send it commands. Check the origin first.
+(The listener line: cloudflare/security-audit-skill, MIT.)
 XML parsed with external entities or a DTD left enabled (`DocumentBuilderFactory`, `XMLReader`,
 `lxml` with `resolve_entities`, libxml2 `noent`): input reads local files or reaches internal
 hosts (XXE). Disable external-entity and DTD loading on the parser.
@@ -78,22 +81,24 @@ A generic parser crash with no security effect. An effect only on the caller the
 
 Each security line carries one of three verdicts after the tier, and the tier follows it:
 - `confirmed` — the path is read end to end in source, from the entry where lower-trust input
-  arrives to the sink, and the effect is shown: a bounded local check (a fixture, a function
-  call, a parser input, a CLI run, a rendered policy — whatever the target's own interface is),
-  or a trace precise enough that a reader can rerun it. Tier `breaks`. Severity never exceeds
-  the effect that was shown.
+  arrives to the sink, and the effect is shown by a trace precise enough that a reader can
+  follow it to the same result. Nothing is run to prove a line, the same rule as
+  `atlas-secure`'s `method.md`. Tier `breaks`. Severity never exceeds the effect that was
+  shown.
 - `needs_validation` — the source supports the claim but one fact outside the source decides
   it: a deployment setting, an identity, a route, a runtime flag. The line names that exact
   fact and the non-destructive way the owner can observe it. Tier `ask`. No severity. This is
   not a place to park a hunch: with no decisive missing fact the line is `rejected`.
 - `rejected` — source, a visible control, a missing impact or an impossible prerequisite refutes
-  it. Not printed as a finding; one line at the end, `N rejected on second look`, so the same
+  it. A control refutes only when it is named at file and line and runs on every path before
+  the effect; "the framework escapes it" unread, or a guard on a sibling route, is not one.
+  Not printed as a finding; one line at the end, `N rejected on second look`, so the same
   claim is not raised again without new evidence.
 
 Nothing deployed is contacted: no request to an endpoint, no external service, no shared
-infrastructure, no production identity. Dynamic checks run only against a local copy with no
-network; when that is not possible the line stays `needs_validation` and says which capability
-was missing. On a second opinion, the second reviewer (`atlas-diff`) is given the candidate
+infrastructure, no production identity. No dynamic check is run to prove a line; when the
+source cannot show the effect, the line is `needs_validation` with the fact that would. On a
+second opinion, the second reviewer (`atlas-diff`) is given the candidate
 lines without their verdicts and asked to refute each one from the source; a `confirmed` that
 it cannot confirm drops to `needs_validation`. The fix on a `confirmed` line is the narrowest
 source change that enforces the invariant, not one that moves the trust somewhere else. A clean

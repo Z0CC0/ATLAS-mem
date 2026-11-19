@@ -95,9 +95,15 @@ one project per sub-folder, every source file parsed once. It records files and 
 top-level symbols and who calls whom inside a project, code written twice (identical text,
 or the same shape under other names) inside and across projects, and the symbols nothing
 calls, graded against the list of what a static graph cannot see (dynamic dispatch, IPC by
-string, FFI, entry points). `scan`, `report`, `dups`, `hubs`, `dead`. Pairs of projects
+string, FFI, entry points). `scan`, `report`, `dups`, `hubs`, `dead`, `impact`. Pairs of projects
 declared as a porting are marked and never counted. It writes one JSON and never touches a
-source file; "uncalled" is a label, never a removal.
+source file; "uncalled" is a label, never a removal. A name the project defines more than once
+is kept as an inferred edge with its candidate count, never counted in hubs or dead: `impact`
+lists those callers apart as possible, adds the files whose module-level code names the symbol,
+and always ends with how many references it could not resolve. A scan records each project's
+commit and each file's size and mtime, so every read starts with how many files the graph is
+behind, and `dead` refuses while any is. `report` flags a file with syntax errors, or with no
+definition in more than 200 lines, as probably read with the wrong grammar.
 
 A third tool, `tools/harvest.mjs`, feeds the memory from what already exists without ever
 writing a note by itself: it pulls the decision-shaped lines out of past Claude Code sessions
@@ -110,13 +116,15 @@ candidate that says what the vault already says is skipped and named.
 `tools/labels.mjs` and `hooks/atlas-labels.js` are the labels: a table in `<vault>/.atlas/labels.json`,
 and a `PostToolUse` hook on `Grep` and `Read` that attaches the label of any symbol a result
 names, with the successor and the reason. Code is never deleted, it is marked, and it cannot
-be found without the mark. Silent when the directory has no vault. `hooks/atlas-precompact.js`,
+be found without the mark. On a `Read` the same hook brings the notes `links.json` ties to the
+file, one line each with its trust, at most three, each file once a session. Silent when the
+directory has no vault or the file no linked note. `hooks/atlas-precompact.js`,
 on `PreCompact`, keeps the session's decision-shaped lines in `<vault>/.atlas/harvest/` before
 the conversation is compacted, as raw material for `harvest run`, and hands them back as context
 when the session resumes on its summary; nothing enters the vault. `hooks/atlas-signals.js`, on
 `Stop`, asks at most three times a session whether one sign in the transcript (a fix, a
 correction, an undo, a choice) is worth a note: one more turn each time; `"signals": false` in
-`~/.claude/atlas.json` switches it off. `hooks/atlas-recall.js`, on every prompt, brings at most three notes the prompt is about (`"recall": false` to switch off), and `hooks/atlas-fresh.js`, at session start, names the notes the code has left (`"fresh": false`); `memcheck claims` checks notes with no code link, and `memcheck autolink` makes the links that are certain. A project's `.atlas.json` vault counts only when
+`~/.claude/atlas.json` switches it off. `hooks/atlas-recall.js`, on every prompt, brings at most three notes the prompt is about (`"recall": false` to switch off), and `hooks/atlas-fresh.js`, at session start and at the start of an ATLAS subagent that reads the project, names the notes the code has left (`"fresh": false`); `memcheck claims` checks notes with no code link, and `memcheck autolink` makes the links that are certain. A project's `.atlas.json` vault counts only when
 `~/.claude/atlas.json` confirms it (`"vault"` or `"vaults"`).
 
 Two optional layers, each one file, each saying plainly when its dependency is missing:

@@ -20,9 +20,11 @@ Findings only. The caller can read their own diff; what they cannot see is what 
 `unclear` — right, but the next reader will misread it
 `ask` — cannot be judged without something only the author knows
 
-Ordered by tier, then by file. A problem in code the target did not touch: one line at the end,
-marked `outside`, no fix. Nothing found: `nothing found` and stop. Not "looks good", not a list
-of what was checked.
+Ordered by tier, then by file. A defect the target causes gets its tier and fix wherever it
+lives, in an untouched caller too. `outside` is only for a defect that was there before: one
+line at the end, no fix. Nothing found: `nothing found` and stop. Not "looks good", not a list
+of what was checked, with one exception: when more than 5 files changed, or any changed file
+went unread, the last line is `read M/N files; skipped: <path> (<reason>)`.
 
 ## What the caller gives
 
@@ -40,11 +42,14 @@ already guards are not findings. Zero findings is a valid result.
 ## How
 
 Read every changed file whole, then the callers of what changed and the tests that name it.
+On the local work (`git diff` or `git diff HEAD`) the target also takes `git diff --staged`
+and `git status --porcelain --untracked-files=all`: every `??` file is read whole.
 `Bash` is for `git diff`, `git show`, `git log`, `gh pr diff`, `gh pr view` and the check
 commands a checklist names: reading and running checks, never changing files. A failed check is
 one line, the first decisive error quoted exactly, tier `breaks`.
 
-The same defect in several places is one line with the count.
+The same defect in several places is one line with the count; two defects on one line are two
+lines. The cited line is read again before writing and must hold the code the line is about.
 
 ## Form
 

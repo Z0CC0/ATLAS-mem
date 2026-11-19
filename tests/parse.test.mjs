@@ -173,3 +173,10 @@ test('command line: the grammar is loaded before the command runs, and exit code
   assert.match(bad.stderr, /nothing is not defined/);
   assert.match(cli('defs', s.repo, 'a.ts').stdout, /1-3 +retry/);
 });
+
+test('analyze: names used outside every definition, imports and definitions left out', opts, () => {
+  const js = ["import { handler, other } from './h.js';", 'const run = () => other();', "app.get('/x', handler);", 'export default { handler };', 'run();'].join('\n');
+  assert.deepEqual(p.analyze(js, 'r.js').moduleRefs, ['app', 'handler', 'run']);
+  const py = ['from engine.core import run', 'def serve():', '    return run()', "if __name__ == '__main__':", '    serve()'].join('\n');
+  assert.deepEqual(p.analyze(py, 'a.py').moduleRefs, ['__name__', 'serve']);
+});

@@ -158,6 +158,21 @@
           }
         ]
       }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "^atlas-[a-z]+:atlas-(finder|runner|diff|auditor|documenter|fixer|profiler|tester)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/atlas-fresh.js"
+            ],
+            "timeout": 8
+          }
+        ]
+      }
     ]
   },
   "modules": [

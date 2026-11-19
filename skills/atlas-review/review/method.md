@@ -2,12 +2,24 @@
 
 ## Gather
 
-1. `git diff` and `git diff --staged`. Both empty: `git log --oneline -5` and ask which commit;
-   do not review the last one by guess.
+1. `git diff`, `git diff --staged` and `git status --porcelain --untracked-files=all`. Every
+   `??` file is new work no diff shows: it is part of the target and read whole. All three
+   empty: `git log --oneline -5` and ask which commit; do not review the last one by guess.
 2. For every changed file, read the whole file, not the hunk. Then the callers of what changed
    (`grep` the symbol) and the tests that name it. Half of the findings a reviewer regrets were
-   handled one frame up.
-3. Note the languages and frameworks in play; that decides which checklists to read next.
+   handled one frame up. A caller the diff broke is a finding at the caller, with its fix,
+   though the diff never touched that file.
+3. Files that must move together: locale files, a header and its implementation, an interface
+   and its implementations, a schema and its generated types, a client and its server. When
+   one member changed and a sibling did not, the sibling is a `fragile` line naming what it
+   lacks. The smaller or the generated member is no reason to skip it.
+4. The project's own rules: `CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING`, and each
+   `.claude/rules/*.md` whose `paths` match a changed file. A rule the diff breaks is a line
+   that quotes the rule.
+5. Note the languages and frameworks in play; that decides which checklists to read next.
+
+(Untracked files, siblings that move together and path-matched project rules:
+alibaba/open-code-review, Apache-2.0.)
 
 ## The proof a line needs
 
@@ -20,7 +32,25 @@ test. If one of the three is missing, the tier drops to `unclear` or `ask`, or t
 `unclear` names the misreading: what a reader will think the code does, and what it does.
 `ask` names the fact only the author has: "is `id` ever negative here?".
 
-The same defect in five places is one line with the count, not five lines.
+The same defect in five places is one line with the count, not five lines. Two different
+defects on one line are two lines: an injection and a swallowed `catch` on line 40 are both
+written.
+
+Before a line is written, the cited line is read again and must hold the code the finding is
+about. Line numbers drift between reading and writing; a line that points at other code sends
+the reader to the wrong place, so it is corrected or dropped.
+
+A fix that guards one caller while the shared function keeps the defect is `fragile`, and the
+line names the shared function and how many other callers reach it. (DietrichGebert/ponytail,
+MIT.)
+
+## What the diff removed
+
+Every output the old code produced and the new code no longer does is chased to its users: a
+removed or renamed field, key, status code, default value, message, error type, export, flag
+or event. `grep` the old name across the repository, outside the diff. A reader the diff did
+not update is a line at that reader: `breaks` when it uses the output unguarded, `fragile`
+when it falls back. (alibaba/open-code-review, Apache-2.0.)
 
 Zero findings is a result. A small diff that is typed, tested and shaped like the code around
 it gets `nothing found`. Lines invented so the review looks thorough are the main way a model

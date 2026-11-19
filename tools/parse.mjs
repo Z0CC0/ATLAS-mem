@@ -369,11 +369,19 @@ function basesOf(node) {
   return [...new Set(out)];
 }
 
+/** Statements that bring names in: a name in them is not a use of the code it names. */
+const IMPORT_TYPES = new Set(['import_statement', 'import_from_statement', 'import_declaration', 'use_declaration', 'using_directive', 'preproc_include', 'future_import_statement']);
+/** `export default { handler }`: the shorthand key is a use of `handler`. */
+const MODULE_REF_TYPES = new Set([...REFERENCE_TYPES, 'shorthand_property_identifier']);
+
 /**
  * Everything the code graph wants from one file, from one parse:
- * `{ defs: [{ name, kind, line, first, last, top, exported, shape, tokens, refs }], imports, dynamic, broken }`.
+ * `{ defs: [{ name, kind, line, first, last, top, exported, shape, tokens, refs }], moduleRefs, imports, dynamic, broken }`.
  * `refs` are the names each definition uses that it does not define itself (depth one, no
- * property accesses). Null when the file cannot be parsed here.
+ * property accesses). `moduleRefs` are the names used by code outside every definition, such
+ * as `app.get('/x', handler)` at the top of a file: no definition owns that call, so without
+ * them the file that makes it is missing from a blast radius. Null when the file cannot be
+ * parsed here.
  */
 function analyze(source, file) {
   if (!ready(file)) return null;
@@ -385,10 +393,13 @@ function analyze(source, file) {
     tree = parser.parse(source);
     if (!tree) return null;
     const defs = [];
-    const stack = [[tree.rootNode, true]];
+    const moduleRefs = new Set();
+    // the third field is true once the walk is inside a definition or an import
+    const stack = [[tree.rootNode, true, false]];
     while (stack.length) {
-      const [node, top] = stack.pop();
+      const [node, top, owned] = stack.pop();
       const name = nameOf(node);
+      if (!owned && !name && MODULE_REF_TYPES.has(node.type) && node.namedChildCount === 0) moduleRefs.add(node.text);
       if (name) {
         const extent = extentOf(node);
         const first = extent.startPosition.row + 1;
@@ -411,10 +422,11 @@ function analyze(source, file) {
         defs.push({ name: name.text, kind: node.type, line: name.startPosition.row + 1, first, last, top, exported, shape: shape.join(' '), tokens: shape.length, refs: [...used].filter((u) => !bound.has(u)).sort(), bases });
       }
       const nextTop = top && !SCOPES.test(node.type);
-      for (let i = node.namedChildCount - 1; i >= 0; i -= 1) stack.push([node.namedChild(i), nextTop]);
+      const nextOwned = owned || Boolean(name) || IMPORT_TYPES.has(node.type);
+      for (let i = node.namedChildCount - 1; i >= 0; i -= 1) stack.push([node.namedChild(i), nextTop, nextOwned]);
     }
     defs.sort((a, b) => a.line - b.line || a.first - b.first);
-    return { defs, imports: importsOf(tree.rootNode, grammar), dynamic: DYNAMIC.test(source), broken: tree.rootNode.hasError };
+    return { defs, moduleRefs: [...moduleRefs].sort(), imports: importsOf(tree.rootNode, grammar), dynamic: DYNAMIC.test(source), broken: tree.rootNode.hasError };
   } catch {
     return null;
   } finally {

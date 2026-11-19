@@ -126,3 +126,68 @@ test('resolveImport: relative modules, index files, python packages, libraries',
   assert.equal(cg.resolveImport('.mod', 'pkg/__init__.py', files, 'python'), 'pkg/mod.py');
   assert.equal(cg.resolveImport('numpy', 'top.py', files, 'python'), null);
 });
+
+test('a name defined twice: its caller is a possible caller, never counted, and the answer says so', opts, async () => {
+  const before = await cg.scan(setup());
+  assert.deepEqual(before.inferred, [], 'unambiguous code makes no inferred edge');
+  const root = setup();
+  const w = (rel, lines) => fs.writeFileSync(path.join(root, rel), lines.join('\n') + '\n');
+  w('alpha/src/disk.js', ['export function save(x) {', '  return x;', '}']);
+  w('alpha/src/cloud.js', ['export function save(x) {', '  return [x];', '}']);
+  w('alpha/src/form.js', ["import { save } from './disk.js';", 'export function submit(x) {', '  return save(x);', '}']);
+  const g = await cg.scan(root);
+  const sym = (n, file) => g.symbols.find((s) => s.name === n && s.project === 'alpha' && (!file || g.files[s.file].path === file));
+  const cloud = sym('save', 'src/cloud.js');
+  assert.equal(cloud.in, 0, 'an inferred edge is not counted');
+  assert.ok(g.inferred.some((e) => e.from === sym('submit').id && e.to.includes(cloud.id) && e.candidates === 2));
+  const text = cg.impactReport(g, 'alpha', 'src/cloud.js:save');
+  assert.match(text, /^nothing in alpha calls or inherits/);
+  assert.match(text, /possible callers: 1[^\n]*\n {2}submit {2}src\/form\.js:2-4 {2}1 of 2 definitions named save/);
+  assert.match(text, /1 reference not resolved \(a name defined more than once in alpha\)$/);
+  // what was unambiguous before is the same: hubs and dead grades of the old symbols
+  const keep = (gr) => gr.symbols.filter((s) => s.project === 'alpha' && !['save', 'submit'].includes(s.name)).map((s) => `${s.name} ${s.in} ${s.out} ${(gr.dead.find((d) => d.symbol === s.id) || {}).grade}`).sort();
+  assert.deepEqual(keep(g), keep(before));
+  assert.match(cg.impactReport(before, 'alpha', 'retry'), /1 step away: 1\n {2}run [^\n]*\n0 references not resolved/);
+});
+
+test('module-level code that names an imported symbol puts its file in the radius', opts, async () => {
+  const root = setup();
+  const w = (rel, lines) => fs.writeFileSync(path.join(root, rel), lines.join('\n') + '\n');
+  w('alpha/src/handlers.js', ['export function home(req, res) {', '  return res.send(1);', '}']);
+  w('alpha/src/routes.js', ["import { home } from './handlers.js';", "app.get('/', home);"]);
+  const g = await cg.scan(root);
+  const text = cg.impactReport(g, 'alpha', 'home');
+  assert.match(text, /^nothing in alpha calls/);
+  assert.match(text, /files naming it at module level: 1\n {2}src\/routes\.js/);
+  assert.ok(!g.uses.some((u) => g.files[u.file].path === 'src/main.js'), 'a file calling its own symbol at module level is not listed');
+});
+
+test('a read says how far behind the graph is, and dead refuses on a stale graph', opts, async () => {
+  const root = setup();
+  const out = path.join(root, 'graph.json');
+  await cg.main(['scan', root, '--out', out, '--quiet']);
+  assert.doesNotMatch(await cg.main(['impact', out, 'alpha', 'retry']), /behind/, 'a fresh graph says nothing');
+  assert.match(await cg.main(['dead', out, 'alpha']), /^probable/);
+  fs.appendFileSync(path.join(root, 'alpha', 'src', 'util.js'), 'export const later = 1;\n');
+  fs.writeFileSync(path.join(root, 'alpha', 'src', 'extra.js'), 'export function extra() { return 1; }\n');
+  const text = await cg.main(['impact', out, 'alpha', 'retry']);
+  assert.match(text, /^graph is 2 files behind \(scan again\): alpha\/src\/util\.js, alpha\/src\/extra\.js \(new\)\n1 step away/);
+  assert.match(await cg.main(['hubs', out, 'alpha']), /^graph is 2 files behind/);
+  assert.match(await cg.main(['dead', out, 'alpha']), /^graph is 2 files behind[^\n]*\nrefused/);
+  const g = cg.loadGraph(out);
+  for (const f of g.files) delete f.mtime;
+  assert.match(cg.staleLine(cg.staleness(g)), /no file state/, 'an older graph says it cannot tell');
+});
+
+test('report flags files the graph probably did not read', opts, async () => {
+  const clean = await cg.scan(setup());
+  assert.doesNotMatch(cg.report(clean), /unread/);
+  const root = setup();
+  // Pascal under a C header extension: the C++ grammar reads it without a useful definition
+  const pascal = ['unit Legacy;', 'interface', 'implementation'];
+  for (let i = 0; i < 100; i += 1) pascal.push(`procedure P${i};`, 'begin x := 1; end;');
+  pascal.push('end.');
+  fs.writeFileSync(path.join(root, 'alpha', 'src', 'legacy.h'), pascal.join('\n') + '\n');
+  const text = cg.report(await cg.scan(root));
+  assert.match(text, /unread {4}1 file probably wrong grammar or unparsed: alpha 1\n {2}alpha\/src\/legacy\.h/);
+});

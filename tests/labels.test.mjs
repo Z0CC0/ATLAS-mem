@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -120,6 +121,71 @@ test('the vault of the user file is confirmed and is the fallback', () => {
   } finally {
     if (before === null) fs.rmSync(userFile, { force: true }); else fs.writeFileSync(userFile, before);
   }
+});
+
+// A vault whose notes are linked to files of a repository, the way `memcheck link` writes them.
+function linkedVault(notes) {
+  const v = vault();
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'linked-repo-'));
+  const norm = (p) => { const a = path.resolve(p).replace(/\\/g, '/'); return process.platform === 'win32' ? a.toLowerCase() : a; };
+  const side = { version: 1, notes: {} };
+  for (const [slug, { file, trust = 'firm', dep }] of Object.entries(notes)) {
+    fs.writeFileSync(path.join(v, `${slug}.md`), `---\nname: ${slug}\ndescription: Why ${slug} holds\n---\n\nbody\n`);
+    const link = { repo: norm(repo), file, lines: '1-3', symbol: 'f', fingerprint: 'x' };
+    if (dep) link.deps = [{ file: dep, symbol: 'g', lines: '1-2' }];
+    side.notes[slug] = { links: [link], trust };
+  }
+  fs.mkdirSync(path.join(v, '.atlas'), { recursive: true });
+  fs.writeFileSync(path.join(v, '.atlas', 'links.json'), JSON.stringify(side));
+  fs.writeFileSync(path.join(repo, '.atlas.json'), JSON.stringify({ vault: v }));
+  confirmVault(v);
+  return { v, repo };
+}
+const readHook = (repo, file, session) => {
+  const r = spawnSync(process.execPath, [hook], { input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Read', cwd: repo, session_id: session, tool_input: { file_path: path.join(repo, file) }, tool_response: { file: { content: 'nothing labelled' } } }), encoding: 'utf8', env: { ...process.env, HOME, USERPROFILE: HOME } });
+  return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.additionalContext : '';
+};
+
+test('a Read of a linked file brings its notes once a session, and nothing for other files', () => {
+  const { repo } = linkedVault({ 'pay-limit': { file: 'src/pay.js' }, 'pay-retry': { file: 'src/pay.js', trust: 'suspect' }, 'uses-pay': { file: 'src/ui.js', dep: 'src/pay.js' } });
+  const session = 'labels-test-' + Math.random().toString(36).slice(2);
+  const first = readHook(repo, 'src/pay.js', session);
+  const lines = first.split('\n');
+  assert.match(lines[0], /^ATLAS notes linked to this file/);
+  assert.equal(lines[1], '- pay-retry (SUSPECT: its code has changed): Why pay-retry holds', 'a suspect note comes first');
+  assert.equal(lines[2], '- pay-limit (firm): Why pay-limit holds');
+  assert.equal(lines[3], '- uses-pay (firm, through code it depends on): Why uses-pay holds');
+  assert.equal(readHook(repo, 'src/pay.js', session), '', 'the same file again in the session: silent');
+  assert.equal(readHook(repo, 'src/other.js', session), '', 'no note linked: silent');
+  assert.match(readHook(repo, 'src/pay.js', 'labels-test-other-' + Math.random().toString(36).slice(2)), /pay-retry/, 'a new session sees it again');
+});
+
+test('a link written by memcheck is found from the path a Read hands the hook', () => {
+  const { v, repo } = linkedVault({});
+  fs.writeFileSync(path.join(v, 'limit.md'), '---\nname: limit\ndescription: The retry limit is 3\n---\n\nbody\n');
+  fs.mkdirSync(path.join(repo, 'src'));
+  fs.writeFileSync(path.join(repo, 'src', 'pay.js'), 'function retryPayment(n) {\n  return n < 3;\n}\n');
+  const made = spawnSync(process.execPath, [path.join(here, '..', 'tools', 'memcheck.mjs'), 'link', v, 'limit', repo, 'src/pay.js', 'retryPayment'], { encoding: 'utf8' });
+  assert.equal(made.status, 0, made.stderr);
+  assert.match(readHook(repo, 'src/pay.js', 'labels-test-' + Math.random().toString(36).slice(2)), /- limit \((firm|unverified)\): The retry limit is 3/);
+});
+
+test('at most three notes per file, the rest counted', () => {
+  const { repo } = linkedVault(Object.fromEntries(['a', 'b', 'c', 'd', 'e'].map((s) => [`note-${s}`, { file: 'core.py' }])));
+  const text = readHook(repo, 'core.py', 'labels-test-' + Math.random().toString(36).slice(2));
+  assert.equal(text.split('\n').filter((l) => l.startsWith('- ')).length, 3);
+  assert.match(text, /and 2 more: memcheck impact on this file$/);
+});
+
+test('the file lookup stays under 50 ms on 316 linked notes', () => {
+  const { notesFor } = createRequire(import.meta.url)(hook);
+  const side = { notes: {} };
+  for (let i = 0; i < 316; i += 1) side.notes[`n${i}`] = { trust: 'firm', links: [{ repo: '/r', file: `src/f${i}.js`, deps: [{ file: `src/d${i}.js` }] }] };
+  const t = process.hrtime.bigint();
+  const hits = notesFor(side, '/r/src/f7.js');
+  const ms = Number(process.hrtime.bigint() - t) / 1e6;
+  assert.deepEqual(hits.map((h) => h.slug), ['n7']);
+  assert.ok(ms < 50, `${ms} ms`);
 });
 
 test('the hook file stays under the 10 KB ceiling', () => {

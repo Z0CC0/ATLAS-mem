@@ -20,8 +20,15 @@
  * data and marked, never counted: a port is the same code on purpose. Dead-code candidates
  * are graded (certain / probable / uncertain) from the false-positive list — dynamic
  * dispatch, IPC by string, FFI, entry points in configuration — and are only ever a label.
+ *
+ * A scan records what it was taken from: each project's commit and each file's size and mtime.
+ * Every read command starts by saying how many files changed, went or arrived since, and `dead`
+ * refuses to answer while any did. A reference whose name the project defines more than once is
+ * kept as inferred, never counted, and `impact` lists it apart and ends with how many such
+ * references touch the radius.
  */
 
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { basename, dirname, extname, join, posix, relative, resolve } from 'node:path';
@@ -71,6 +78,21 @@ function resolveImport(mod, fromFile, files, grammar) {
   return m ? tryAll([`${m[1]}.ts`, `${m[1]}.tsx`, `${m[1]}.mts`, `${m[1]}.cts`]) : null;
 }
 
+/** The projects under `root` and the files a scan reads in each, filtered by the skip list. */
+function planFiles(root, skipSet) {
+  forgetFiles();
+  const exts = new Set(Object.keys(parse.GRAMMAR_BY_EXT));
+  const projects = readdirSync(root, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && !d.name.startsWith('.') && !skipSet.has(d.name))
+    .map((d) => ({ name: d.name, path: join(root, d.name) }));
+  // every path segment is checked against the skip list
+  return projects.map((p) => ({ project: p, files: listFiles(p.path, exts).filter((f) => !f.split('/').some((part) => skipSet.has(part) || part.startsWith('.')) && !/\.min\.(js|mjs|cjs)$/.test(f)) }));
+}
+
+function gitHead(dir) {
+  try { return execFileSync('git', ['-C', dir, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim() || null; } catch { return null; }
+}
+
 /**
  * Scan `root`: each sub-folder is a project. `onProgress(done, total, file)` is optional.
  */
@@ -78,23 +100,14 @@ async function scan(root, { skip = [], porting = [], onProgress = null } = {}) {
   root = resolve(root);
   if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`root not found: ${root}`);
   await parse.load(Object.keys(parse.GRAMMAR_BY_EXT).map((e) => `x${e}`));
-  forgetFiles();
   const skipSet = new Set([...SKIP_DIRS, ...DEFAULT_SKIP, ...skip]);
-  const exts = new Set(Object.keys(parse.GRAMMAR_BY_EXT));
-
-  const projects = readdirSync(root, { withFileTypes: true })
-    .filter((d) => d.isDirectory() && !d.name.startsWith('.') && !skipSet.has(d.name))
-    .map((d) => ({ name: d.name, path: join(root, d.name) }));
-
-  // files per project, filtered by the skip list (every path segment)
-  const plan = [];
-  for (const p of projects) {
-    const files = listFiles(p.path, exts).filter((f) => !f.split('/').some((part) => skipSet.has(part) || part.startsWith('.')) && !/\.min\.(js|mjs|cjs)$/.test(f));
-    plan.push({ project: p, files });
-  }
+  const plan = planFiles(root, skipSet);
   const total = plan.reduce((a, p) => a + p.files.length, 0);
 
-  const out = { version: VERSION, root, scanned: new Date().toISOString(), skip: [...skipSet].sort(), porting, projects: [], files: [], symbols: [], imports: [], calls: [], inherits: [], dups: [], dead: [] };
+  // `inferred` holds the references whose name the project defines more than once, and `uses`
+  // the module-level code that names a symbol of an imported file: neither feeds `in` or `out`,
+  // so hubs and dead-code grades stay what certain edges make them
+  const out = { version: VERSION, root, scanned: new Date().toISOString(), skip: [...skipSet].sort(), porting, projects: [], files: [], symbols: [], imports: [], calls: [], inherits: [], inferred: [], uses: [], dups: [], dead: [] };
   const fileId = new Map();
   let done = 0;
   const sources = new Map(); // fileId → lines (kept for the "name appears in a string" test)
@@ -105,19 +118,20 @@ async function scan(root, { skip = [], porting = [], onProgress = null } = {}) {
   let keptLines = 0; let droppedFiles = 0;
 
   for (const { project, files } of plan) {
-    const pr = { name: project.name, path: project.path, files: 0, lines: 0, symbols: 0, languages: {}, external: {} };
+    // the commit and, per file, size and mtime: what a later read compares to say how far behind it is
+    const pr = { name: project.name, path: project.path, commit: gitHead(project.path), files: 0, lines: 0, symbols: 0, languages: {}, external: {} };
     const pIndex = new Map(); // name → [symbol ids] (top-level, this project)
     const pFiles = [];
     for (const f of files) {
       done += 1;
       if (onProgress) onProgress(done, total, `${project.name}/${f}`);
-      let lines;
-      try { lines = readLines(join(project.path, f)); } catch { continue; }
+      let lines, st;
+      try { st = statSync(join(project.path, f)); lines = readLines(join(project.path, f)); } catch { continue; }
       const grammar = parse.grammarOf(f);
       const a = parse.analyze(lines.join('\n'), f);
       const id = out.files.length;
       fileId.set(`${project.name}|${f}`, id);
-      const rec = { id, project: project.name, path: f, lang: grammar, lines: lines.length, defs: a ? a.defs.length : 0, dynamic: a ? a.dynamic : false, broken: a ? a.broken : false, imports: [], external: [] };
+      const rec = { id, project: project.name, path: f, lang: grammar, lines: lines.length, size: st.size, mtime: Math.floor(st.mtimeMs), parsed: Boolean(a), defs: a ? a.defs.length : 0, dynamic: a ? a.dynamic : false, broken: a ? a.broken : false, imports: [], external: [] };
       out.files.push(rec);
       if (keptLines + lines.length <= MAX_KEPT_LINES) { sources.set(id, lines); keptLines += lines.length; } else droppedFiles += 1;
       pFiles.push({ rec, a, lines });
@@ -143,12 +157,22 @@ async function scan(root, { skip = [], porting = [], onProgress = null } = {}) {
         else if (im.module && !im.module.startsWith('.') && !/^[@~]\//.test(im.module)) { const lib = im.module.split('/')[0].replace(/^@([^/]+)\/.*/, '@$1'); if (!rec.external.includes(lib)) rec.external.push(lib); pr.external[lib] = (pr.external[lib] || 0) + 1; }
       }
     }
+    // A name the project defines more than once cannot be tied to one definition. Dropping the
+    // reference would make a blast radius look complete when it is not, so it is kept apart as
+    // inferred, with every candidate, and never counted in `in` or `out`.
+    // (Inferred edges kept beside certain ones: Graphify-Labs/graphify, Apache-2.0.)
+    const infer = (s, name, targets, kind) => {
+      const to = targets.filter((t) => t !== s.id);
+      if (to.length) out.inferred.push({ from: s.id, name, to, candidates: targets.length, kind });
+    };
     // inherits: a class whose parent one top-level symbol of the project defines
     for (const s of out.symbols) {
       if (s.project !== project.name) continue;
       for (const b of s.bases || []) {
         const targets = pIndex.get(b);
-        if (!targets || targets.length !== 1 || targets[0] === s.id) continue;
+        if (!targets) continue;
+        if (targets.length > 1) { infer(s, b, targets, 'inherits'); continue; }
+        if (targets[0] === s.id) continue;
         out.inherits.push({ from: s.id, to: targets[0] });
         out.symbols[targets[0]].in += 1;
       }
@@ -158,9 +182,21 @@ async function scan(root, { skip = [], porting = [], onProgress = null } = {}) {
       if (s.project !== project.name) continue;
       for (const name of s.refs) {
         const targets = pIndex.get(name);
-        if (!targets || targets.length !== 1 || targets[0] === s.id) continue;
+        if (!targets) continue;
+        if (targets.length > 1) { infer(s, name, targets, 'calls'); continue; }
+        if (targets[0] === s.id) continue;
         out.calls.push({ from: s.id, to: targets[0] });
         s.out += 1; out.symbols[targets[0]].in += 1;
+      }
+    }
+    // module-level code that names a symbol of a file it imports: `app.get('/x', handler)`.
+    // Only certain names count, and the defining file itself is left out, because its own
+    // `export { x }` lines would put every file in every radius.
+    for (const { rec, a } of pFiles) {
+      if (!a || !a.moduleRefs) continue;
+      for (const name of a.moduleRefs) {
+        const targets = pIndex.get(name);
+        if (targets && targets.length === 1 && rec.imports.includes(out.symbols[targets[0]].file)) out.uses.push({ file: rec.id, to: targets[0] });
       }
     }
     out.projects.push(pr);
@@ -259,7 +295,60 @@ function report(g) {
   const dead = { certain: 0, probable: 0, uncertain: 0 };
   for (const d of g.dead) dead[d.grade] += 1;
   out.push(`uncalled  ${g.dead.length} symbols: ${dead.certain} certain, ${dead.probable} probable, ${dead.uncertain} uncertain — labels, never removals`);
+  const unread = unreadFiles(g);
+  if (unread.length) {
+    const per = {};
+    for (const f of unread) per[f.project] = (per[f.project] || 0) + 1;
+    out.push(`unread    ${unread.length} file${unread.length === 1 ? '' : 's'} probably wrong grammar or unparsed: ${Object.entries(per).map(([p, n]) => `${p} ${n}`).join(', ')}`);
+    for (const f of unread.slice(0, UNREAD_SHOWN)) out.push(`  ${f.project}/${f.path}  ${f.broken ? 'syntax errors' : `0 definitions in ${fmt(f.lines)} lines`}`);
+    if (unread.length > UNREAD_SHOWN) out.push(`  and ${unread.length - UNREAD_SHOWN} more`);
+  }
   return out.join('\n');
+}
+
+/**
+ * Files the graph most likely did not read. A grammar fixed by extension parses a file in
+ * another language without an error, into a few stray nodes, so the file looks normal and its
+ * code is missing from every answer. Past UNREAD_LINES lines a file with no definition at all,
+ * or one with syntax errors, is far more often misread than truly empty.
+ * (Wrong-grammar files that look normal: Graphify-Labs/graphify, Apache-2.0.)
+ */
+const UNREAD_LINES = 200;
+const UNREAD_SHOWN = 10;
+function unreadFiles(g) {
+  return g.files.filter((f) => f.broken || (f.defs === 0 && f.lines > UNREAD_LINES));
+}
+
+/**
+ * How far behind the files under the root the graph is: files changed (size or mtime), gone, or
+ * new since the scan. Null when the graph is older than this record and cannot say.
+ */
+function staleness(g) {
+  if (!g.files.length || g.files.some((f) => f.mtime == null)) return g.files.length ? null : { changed: [], gone: [], added: [] };
+  const paths = new Map(g.projects.map((p) => [p.name, p.path]));
+  const changed = [], gone = [];
+  const known = new Set();
+  for (const f of g.files) {
+    known.add(`${f.project}|${f.path}`);
+    try {
+      const st = statSync(join(paths.get(f.project), f.path));
+      if (st.size !== f.size || Math.floor(st.mtimeMs) !== f.mtime) changed.push(`${f.project}/${f.path}`);
+    } catch { gone.push(`${f.project}/${f.path}`); }
+  }
+  const added = [];
+  try {
+    for (const { project, files } of planFiles(g.root, new Set(g.skip || []))) for (const f of files) if (!known.has(`${project.name}|${f}`)) added.push(`${project.name}/${f}`);
+  } catch { /* the root is gone: every file is already counted as gone */ }
+  return { changed, gone, added };
+}
+
+const STALE_NAMED = 5;
+/** The line every read command starts with when the graph is behind; empty when it is not. */
+function staleLine(st) {
+  if (!st) return 'graph records no file state (scanned before this check): how far behind it is is unknown; scan again';
+  const all = [...st.changed, ...st.gone.map((f) => `${f} (gone)`), ...st.added.map((f) => `${f} (new)`)];
+  if (!all.length) return '';
+  return `graph is ${all.length} file${all.length === 1 ? '' : 's'} behind (scan again): ${all.slice(0, STALE_NAMED).join(', ')}${all.length > STALE_NAMED ? `, and ${all.length - STALE_NAMED} more` : ''}`;
 }
 
 function dupsReport(g, { project = null, cross = false } = {}) {
@@ -301,8 +390,29 @@ function impactReport(g, project, symbol, depth = 2) {
   if (all.length > 1) return `${nameWanted} is defined ${all.length} times in ${project}; say which one as <file>:<symbol>:\n` + all.map((x) => `  ${g.files[x.file].path}:${x.first}-${x.last}`).join('\n');
   const s = all[0];
   const rings = impact(g, s.id, depth);
-  if (!rings.length) return `nothing in ${project} calls or inherits from ${symbol}`;
-  return rings.map((ring, i) => `${i + 1} step${i ? 's' : ''} away: ${ring.length}\n` + ring.map((id) => { const t = g.symbols[id]; return `  ${t.name}  ${g.files[t.file].path}:${t.first}-${t.last}`; }).join('\n')).join('\n');
+  const where = (t) => `${g.files[t.file].path}:${t.first}-${t.last}`;
+  const out = [];
+  if (!rings.length) out.push(`nothing in ${project} calls or inherits from ${symbol}`);
+  else out.push(...rings.map((ring, i) => `${i + 1} step${i ? 's' : ''} away: ${ring.length}\n` + ring.map((id) => { const t = g.symbols[id]; return `  ${t.name}  ${where(t)}`; }).join('\n')));
+  // possible callers: they use the name, but the project defines it more than once
+  const possible = (g.inferred || []).filter((e) => e.to.includes(s.id));
+  if (possible.length) {
+    out.push(`possible callers: ${possible.length} (the name has more than one definition; not followed further)`);
+    for (const e of possible) { const t = g.symbols[e.from]; out.push(`  ${t.name}  ${where(t)}  1 of ${e.candidates} definitions named ${e.name}`); }
+  }
+  const uses = (g.uses || []).filter((u) => u.to === s.id);
+  if (uses.length) {
+    out.push(`files naming it at module level: ${uses.length}`);
+    for (const u of uses) out.push(`  ${g.files[u.file].path}`);
+  }
+  // every answer says what it could not see, so a short radius is never read as a complete one
+  if (!g.inferred) out.push('references not resolved: unknown (the graph predates this count; scan again)');
+  else {
+    const radius = new Set([s.id, ...rings.flat()]);
+    const n = g.inferred.filter((e) => e.to.some((t) => radius.has(t))).length;
+    out.push(`${n} reference${n === 1 ? '' : 's'} not resolved (a name defined more than once in ${project})`);
+  }
+  return out.join('\n');
 }
 
 function hubs(g, project = null) {
@@ -341,11 +451,22 @@ async function main(argv) {
       if (out) { mkdirSync(dirname(resolve(out)), { recursive: true }); writeFileSync(out, JSON.stringify(g)); }
       return report(g) + (out ? `\nwritten   ${out}` : '');
     }
-    case 'report': return report(loadGraph(pos[0]));
-    case 'dups': return dupsReport(loadGraph(pos[0]), { project: opt('--project'), cross: flag('--cross') });
-    case 'hubs': return hubs(loadGraph(pos[0]), pos[1] || null);
-    case 'impact': { if (!pos[1] || !pos[2]) throw Object.assign(new Error('usage: impact <file.json> <project> <symbol> [--depth 2]'), { usage: true }); return impactReport(loadGraph(pos[0]), pos[1], pos[2], Number(opt('--depth') || 2)); }
-    case 'dead': return deadReport(loadGraph(pos[0]), pos[1] || null);
+    case 'report': case 'dups': case 'hubs': case 'impact': case 'dead': {
+      if (cmd === 'impact' && (!pos[1] || !pos[2])) throw Object.assign(new Error('usage: impact <file.json> <project> <symbol> [--depth 2]'), { usage: true });
+      const g = loadGraph(pos[0]);
+      // every read says first how far behind the code the graph is
+      const st = staleness(g);
+      const head = staleLine(st);
+      // "nothing calls it" about a file edited since the scan is the verdict most likely to be
+      // false and the costliest to act on, so it is refused rather than warned
+      if (cmd === 'dead' && st && head) return `${head}\nrefused: uncalled verdicts come only from a graph that matches the code`;
+      const body = cmd === 'report' ? report(g)
+        : cmd === 'dups' ? dupsReport(g, { project: opt('--project'), cross: flag('--cross') })
+          : cmd === 'hubs' ? hubs(g, pos[1] || null)
+            : cmd === 'impact' ? impactReport(g, pos[1], pos[2], Number(opt('--depth') || 2))
+              : deadReport(g, pos[1] || null);
+      return head ? `${head}\n${body}` : body;
+    }
     default: throw Object.assign(new Error('usage: node codegraph.mjs <scan|report|dups|hubs|dead|impact> …'), { usage: true });
   }
 }
@@ -362,4 +483,4 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (process.parentPort) process.stdout.write('', () => process.exit(process.exitCode || 0));
 }
 
-export { scan, report, dupsReport, hubs, deadReport, impact, impactReport, loadGraph, resolveImport, main, VERSION, DEFAULT_SKIP };
+export { scan, report, dupsReport, hubs, deadReport, impact, impactReport, staleness, staleLine, unreadFiles, loadGraph, resolveImport, main, VERSION, DEFAULT_SKIP };

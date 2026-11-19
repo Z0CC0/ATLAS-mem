@@ -14,7 +14,7 @@ const recall = path.join(here, '..', 'hooks', 'atlas-recall.js');
 const fresh = path.join(here, '..', 'hooks', 'atlas-fresh.js');
 const tool = path.join(here, '..', 'tools', 'memcheck.mjs');
 const { rank, readNotes } = createRequire(import.meta.url)(recall);
-const { say, MAX_NOTES } = createRequire(import.meta.url)(fresh);
+const { say, reused, cacheFile, MAX_NOTES, REUSE_MS } = createRequire(import.meta.url)(fresh);
 const claims = await import(pathToFileURL(path.join(here, '..', 'tools', 'claims.mjs')).href);
 
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
@@ -147,6 +147,23 @@ test('the session-start line is short, and says nothing when all is well', () =>
   assert.equal(say([]), null);
   const many = Array.from({ length: 8 }, (_, i) => ({ slug: `n${i}`, reason: 'x' }));
   assert.equal(say(many).split('\n').length, 1 + MAX_NOTES + 1);
+});
+
+test('a subagent gets the session stale notes, reused while recent and for the same vault only', () => {
+  const v = vault(FILLER);
+  const env = home({ vault: v });
+  const session = 'fresh-test-' + Math.random().toString(36).slice(2);
+  const items = [{ slug: 'old-limit', reason: 'retryPayment in pay.js changed since this note was written' }];
+  fs.writeFileSync(cacheFile(session), JSON.stringify({ vault: path.resolve(v), at: Date.now(), items }));
+  assert.deepEqual(reused(session, path.resolve(v)), items);
+  assert.equal(reused(session, path.resolve(v), Date.now() + REUSE_MS + 1), null, 'too old: checked again');
+  assert.equal(reused(session, path.resolve(tmp('atlas-vault-'))), null, 'another vault: checked again');
+  const r = spawnSync(process.execPath, [fresh], { input: JSON.stringify({ hook_event_name: 'SubagentStart', agent_type: 'atlas-mem:atlas-finder', cwd: env.HOME, session_id: session }), encoding: 'utf8', env });
+  const out = JSON.parse(r.stdout).hookSpecificOutput;
+  assert.equal(out.hookEventName, 'SubagentStart');
+  assert.match(out.additionalContext, /- old-limit: retryPayment in pay\.js changed/);
+  const off = home({ vault: v, fresh: false });
+  assert.equal(spawnSync(process.execPath, [fresh], { input: JSON.stringify({ hook_event_name: 'SubagentStart', cwd: off.HOME, session_id: session }), encoding: 'utf8', env: off }).stdout, '');
 });
 
 test('autolink links a definition a note names, only when certain, and the check then watches it', () => {

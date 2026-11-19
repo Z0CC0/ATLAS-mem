@@ -20,8 +20,8 @@ at the end cannot be `approve` while either holds.
 
 The PR description: what it says it does and the issue it links. The review compares the diff
 with that claim; a change the description does not mention is a line, `ask`.
-The project's own rules: `CLAUDE.md`, `CONTRIBUTING`, and the conventions of the files next to
-the changed ones.
+The project's own rules as `method.md` Gather lists them, read at the head revision, and the
+conventions of the files next to the changed ones.
 Changed files read in full at the head revision, not the hunks:
 `gh api repos/{owner}/{repo}/contents/<path>?ref=<head> --jq .content | base64 -d`, or check the
 branch out when it is local.

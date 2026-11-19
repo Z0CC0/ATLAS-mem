@@ -17,9 +17,11 @@ Findings only. The reader can see their own diff; what they cannot see is what i
 
 Tiers, in this order: `breaks` (wrong result or crash on an input that will occur), `fragile`
 (right on the inputs seen, wrong on a plausible one), `unclear` (right, but the next reader
-will misread it), `ask` (cannot be judged without something only the author knows). A problem
-in code the diff did not touch: one line at the end marked `outside`, no fix. Nothing wrong:
-`nothing found`, and stop.
+will misread it), `ask` (cannot be judged without something only the author knows). A defect
+the diff causes gets its tier and its fix wherever it lives: a caller in an untouched file
+that now crashes on a renamed field is `breaks` at that caller. `outside` is only for a defect
+that was there before the diff: one line at the end, no fix. Nothing wrong: `nothing found`,
+and stop. (Breakage outside the hunks: DietrichGebert/ponytail, MIT.)
 
 ## What to read before reviewing
 
@@ -44,7 +46,13 @@ the request call for; each file is short and says what it is for in its first li
    "errors", "failures", "silent" → `errors.md`
    "my setup", "`.claude`", "hooks", "MCP config", "is my configuration safe", or a diff
    touching those files → `agent-config.md`
-   "before merge", "pre-merge", "ready to merge", "PR" → `errors.md`, `tests.md`, `types.md`
+   "load", "scale", "concurrency", "two workers", or a diff touching a job, queue, worker,
+   cache or module-level state → `scale.md`
+   a diff touching `.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`,
+   `azure-pipelines.yml` or a `Jenkinsfile`, whatever the request → `ci.md`
+   "audit the repo", "the whole codebase", "review the project" → `repo.md` first
+   "before merge", "pre-merge", "ready to merge", "PR" → `errors.md`, `tests.md`, `types.md`,
+   `scale.md`
    a number, a `github.com/.../pull/` URL, "the PR" → `pr.md` first, it changes what the diff is
    No angle named: language files plus `errors.md` when the diff touches a `catch`, `except`,
    `rescue`, `Result`, `Optional` or an error return. That lens is cheap and it is where
@@ -57,7 +65,11 @@ shared context. Once here. Once by the `atlas-diff` subagent, told only the diff
 angle and the absolute paths of the files above, nothing of what was found here. Then print
 one list: lines both found first, then lines only one found, each of those marked `(one of
 two)`. A line one reviewer found and the other read and rejected is dropped and counted:
-`N dropped on second look`. Two passes cost twice; they are for a merge, not for a typo.
+`N dropped on second look`. A line about bounds or off-by-one, concurrency, a declaration its
+uses no longer match, a changed behaviour or default, or a parameter accepted and ignored is
+dropped only when the rejecting reviewer names the guard at file and line; a checker is most
+often sure and wrong on these. (alibaba/open-code-review, Apache-2.0.) Two passes cost twice;
+they are for a merge, not for a typo.
 
 ## Full review — a workflow
 
@@ -73,12 +85,15 @@ as in `method.md`:
 
 ```
 Workflow({ scriptPath: "${CLAUDE_PLUGIN_ROOT}/skills/atlas-review/workflows/review-full.mjs",
-           args: { target, prefix, angles } })
+           args: { target, prefix, angles,
+                   rules: "${CLAUDE_PLUGIN_ROOT}/skills/atlas-review/review" } })
 ```
 
-`args.angles` only when the person named an angle the three (correctness, security,
+`target` left out for the local work: the script then takes staged, unstaged and untracked
+files. `args.angles` only when the person named an angle the three (correctness, security,
 errors+tests) do not cover. It returns `lines` in the line format above, with
-`N dropped on second look` when the refuters removed candidates; print them unchanged.
+`N dropped on second look` when the refuters removed candidates and the closing `read M/N`
+line from Form when it applies; print them unchanged.
 Without the Workflow tool: say so in one line and run "second opinion" instead.
 
 ## Where the work goes
@@ -98,3 +113,8 @@ stays, the words inside it shorten. A review that adds angles is not permission 
 what it adds is findings, the prose around them is not. No summary of the change, no verdict
 paragraph, no list of what was checked. In PR mode the decision word comes from `pr.md` and is
 one line.
+
+One exception to "no list of what was checked": when more than 5 files changed, or any changed
+file went unread, the last line is `read M/N files; skipped: <path> (<reason>)`. On a large
+diff a reviewer reads part of it and reports on the whole; this line shows which part.
+(The coverage line: alibaba/open-code-review, Apache-2.0.)
